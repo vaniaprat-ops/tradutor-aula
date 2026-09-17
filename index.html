@@ -101,7 +101,6 @@
   </header>
 
   <main>
-    <!-- VISTA PROFESSOR -->
     <div id="profView">
       <button id="btnMic" class="btn-mic" onclick="toggleMic()">Ligar Microfone</button>
       <div class="draft-box">
@@ -112,7 +111,6 @@
       <div id="profFeed" class="feed"></div>
     </div>
 
-    <!-- VISTA ALUNA -->
     <div id="alunaView" class="aluna-view hidden">
       <div id="alunaFeed" class="feed"></div>
     </div>
@@ -125,7 +123,6 @@
     let silenceTimer = null;
     let lastSentText = '';
 
-    // Canal de comunicação em tempo real entre separadores/dispositivos
     const channel = new BroadcastChannel('ponte_translation_room');
 
     channel.onmessage = (event) => {
@@ -163,30 +160,20 @@
       recognition.interimResults = true;
 
       recognition.onresult = (event) => {
-        let interimTranscript = '';
-        let finalTranscript = '';
+        let fullTranscript = '';
 
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript;
-          } else {
-            interimTranscript += event.results[i][0].transcript;
-          }
+        for (let i = 0; i < event.results.length; ++i) {
+          fullTranscript += event.results[i][0].transcript;
         }
 
-        const currentText = (finalTranscript || interimTranscript).trim();
+        const currentText = fullTranscript.trim();
         document.getElementById('profDraft').innerText = currentText;
 
-        // Reset ao temporizador de silêncio (1.5s)
         clearTimeout(silenceTimer);
         if (currentText.length > 0) {
           silenceTimer = setTimeout(() => {
             processAndSend(currentText);
           }, 1500);
-        }
-
-        if (finalTranscript.length > 0) {
-          processAndSend(finalTranscript);
         }
       };
 
@@ -196,7 +183,7 @@
 
       recognition.onend = () => {
         if (isRecording) {
-          setTimeout(() => { try { recognition.start(); } catch(e){} }, 300);
+          setTimeout(() => { try { recognition.start(); } catch(e){} }, 200);
         }
       };
 
@@ -209,8 +196,8 @@
 
     function stopMic() {
       isRecording = false;
-      if (recognition) recognition.stop();
       clearTimeout(silenceTimer);
+      if (recognition) recognition.stop();
       const btn = document.getElementById('btnMic');
       btn.innerText = 'Ligar Microfone';
       btn.classList.remove('recording');
@@ -220,19 +207,21 @@
     async function processAndSend(rawText) {
       clearTimeout(silenceTimer);
       const cleanText = rawText.trim();
+      
       document.getElementById('profDraft').innerText = '';
 
-      // Filtro 1: Texto muito curto ou igual ao último enviado
+      if (recognition) {
+        try { recognition.stop(); } catch(e){}
+      }
+
       if (cleanText.length < 3 || cleanText === lastSentText) return;
 
-      // Filtro 2: Anti-alucinação de repetições (ex: "C'mon C'mon C'mon")
       const words = cleanText.toLowerCase().split(/\s+/);
       const hasExcessiveRepetition = words.some((w, idx) => w.length > 1 && words[idx+1] === w && words[idx+2] === w);
       if (hasExcessiveRepetition) return;
 
       lastSentText = cleanText;
 
-      // Traduzir com limite de 400 carateres
       const textToTranslate = cleanText.substring(0, 400);
       const translated = await translatePTtoEN(textToTranslate);
 
@@ -248,7 +237,6 @@
         const res = await fetch(url);
         const data = await res.json();
 
-        // Validação rigorosa da resposta da API
         if (data && data.responseData && data.responseStatus === 200) {
           const trans = data.responseData.translatedText;
           if (!trans.includes('QUERY LENGTH LIMIT EXCEEDED') && !trans.includes('MYMEMORY WARNING')) {
