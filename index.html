@@ -120,8 +120,8 @@
     let mode = 'prof';
     let isRecording = false;
     let recognition = null;
-    let silenceTimer = null;
     let lastSentText = '';
+    let currentSegmentText = '';
 
     const channel = new BroadcastChannel('ponte_translation_room');
 
@@ -156,24 +156,27 @@
 
       recognition = new SpeechRecognition();
       recognition.lang = 'pt-PT';
-      recognition.continuous = true;
+      
+      // FORÇAR MODO SEGMENTADO: Impede o Android de acumular o histórico no mesmo evento
+      recognition.continuous = false; 
       recognition.interimResults = true;
 
       recognition.onresult = (event) => {
-        let fullTranscript = '';
+        let interim = '';
+        let final = '';
 
         for (let i = 0; i < event.results.length; ++i) {
-          fullTranscript += event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            final += event.results[i][0].transcript;
+          } else {
+            interim += event.results[i][0].transcript;
+          }
         }
 
-        const currentText = fullTranscript.trim();
-        document.getElementById('profDraft').innerText = currentText;
-
-        clearTimeout(silenceTimer);
-        if (currentText.length > 0) {
-          silenceTimer = setTimeout(() => {
-            processAndSend(currentText);
-          }, 1500);
+        const activeText = (final || interim).trim();
+        if (activeText) {
+          currentSegmentText = activeText;
+          document.getElementById('profDraft').innerText = activeText;
         }
       };
 
@@ -182,22 +185,35 @@
       };
 
       recognition.onend = () => {
+        // Ao fechar o segmento, processa e envia apenas a frase final completa
+        if (currentSegmentText.length > 0) {
+          processAndSend(currentSegmentText);
+          currentSegmentText = '';
+        }
+
+        // Se o microfone continuar ligado pelo professor, reinicia totalmente limpo
         if (isRecording) {
-          setTimeout(() => { try { recognition.start(); } catch(e){} }, 200);
+          setTimeout(() => { 
+            try { recognition.start(); } catch(e){} 
+          }, 150);
         }
       };
 
-      recognition.start();
-      isRecording = true;
-      const btn = document.getElementById('btnMic');
-      btn.innerText = 'Parar Microfone';
-      btn.classList.add('recording');
+      try {
+        recognition.start();
+        isRecording = true;
+        const btn = document.getElementById('btnMic');
+        btn.innerText = 'Parar Microfone';
+        btn.classList.add('recording');
+      } catch(e) {}
     }
 
     function stopMic() {
       isRecording = false;
-      clearTimeout(silenceTimer);
-      if (recognition) recognition.stop();
+      currentSegmentText = '';
+      if (recognition) {
+        try { recognition.stop(); } catch(e){}
+      }
       const btn = document.getElementById('btnMic');
       btn.innerText = 'Ligar Microfone';
       btn.classList.remove('recording');
@@ -205,17 +221,13 @@
     }
 
     async function processAndSend(rawText) {
-      clearTimeout(silenceTimer);
       const cleanText = rawText.trim();
-      
       document.getElementById('profDraft').innerText = '';
 
-      if (recognition) {
-        try { recognition.stop(); } catch(e){}
-      }
-
+      // Ignora frases com menos de 3 carateres ou exatamente iguais à última enviada
       if (cleanText.length < 3 || cleanText === lastSentText) return;
 
+      // Filtro anti-repetição
       const words = cleanText.toLowerCase().split(/\s+/);
       const hasExcessiveRepetition = words.some((w, idx) => w.length > 1 && words[idx+1] === w && words[idx+2] === w);
       if (hasExcessiveRepetition) return;
