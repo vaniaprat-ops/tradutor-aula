@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ponte — Tradução em Tempo Real</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --text: #f8fafc;
+      --accent: #3b82f6;
+      --muted: #94a3b8;
+    }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      padding: 1rem;
+      background: var(--card);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid #334155;
+    }
+    .nav-btns button {
+      background: transparent;
+      border: 1px solid var(--accent);
+      color: var(--text);
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .nav-btns button.active {
+      background: var(--accent);
+    }
+    main {
+      flex: 1;
+      padding: 1.5rem;
+      max-width: 800px;
+      margin: 0 auto;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .btn-mic {
+      width: 100%;
+      padding: 1rem;
+      font-size: 1.2rem;
+      border: none;
+      border-radius: 8px;
+      background: #22c55e;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .btn-mic.recording { background: #ef4444; }
+    .draft-box {
+      margin-top: 1rem;
+      padding: 1rem;
+      background: var(--card);
+      border-radius: 8px;
+      min-height: 60px;
+      border: 1px dashed var(--muted);
+    }
+    .feed {
+      margin-top: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .msg-card {
+      background: var(--card);
+      padding: 1.2rem;
+      border-radius: 8px;
+      border-left: 4px solid var(--accent);
+    }
+    .aluna-view .msg-card {
+      font-size: 2rem;
+      line-height: 1.4;
+      border-left-width: 8px;
+      background: #000;
+      border-color: #38bdf8;
+    }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <strong>Ponte</strong>
+    <div class="nav-btns">
+      <button id="btnProfTab" class="active" onclick="setMode('prof')">Professor</button>
+      <button id="btnAlunaTab" onclick="setMode('aluna')">Aluna</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- VISTA PROFESSOR -->
+    <div id="profView">
+      <button id="btnMic" class="btn-mic" onclick="toggleMic()">Ligar Microfone</button>
+      <div class="draft-box">
+        <small style="color:var(--muted)">Rascunho em tempo real (não enviado):</small>
+        <div id="profDraft" style="margin-top:0.5rem; font-style:italic;"></div>
+      </div>
+      <h3>Frases Enviadas</h3>
+      <div id="profFeed" class="feed"></div>
+    </div>
+
+    <!-- VISTA ALUNA -->
+    <div id="alunaView" class="aluna-view hidden">
+      <div id="alunaFeed" class="feed"></div>
+    </div>
+  </main>
+
+  <script>
+    let mode = 'prof';
+    let isRecording = false;
+    let recognition = null;
+    let silenceTimer = null;
+    let lastSentText = '';
+
+    // Canal de comunicação em tempo real entre separadores/dispositivos
+    const channel = new BroadcastChannel('ponte_translation_room');
+
+    channel.onmessage = (event) => {
+      if (event.data && event.data.text) {
+        addMessageToFeed(event.data.text);
+      }
+    };
+
+    function setMode(newMode) {
+      mode = newMode;
+      document.getElementById('btnProfTab').classList.toggle('active', mode === 'prof');
+      document.getElementById('btnAlunaTab').classList.toggle('active', mode === 'aluna');
+      document.getElementById('profView').classList.toggle('hidden', mode !== 'prof');
+      document.getElementById('alunaView').classList.toggle('hidden', mode !== 'aluna');
+    }
+
+    function toggleMic() {
+      if (isRecording) {
+        stopMic();
+      } else {
+        startMic();
+      }
+    }
+
+    function startMic() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        alert('Navegador não suporta SpeechRecognition.');
+        return;
+      }
+
+      recognition = new SpeechRecognition();
+      recognition.lang = 'pt-PT';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      recognition.onresult = (event) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
+        }
+
+        const currentText = (finalTranscript || interimTranscript).trim();
+        document.getElementById('profDraft').innerText = currentText;
+
+        // Reset ao temporizador de silêncio (1.5s)
+        clearTimeout(silenceTimer);
+        if (currentText.length > 0) {
+          silenceTimer = setTimeout(() => {
+            processAndSend(currentText);
+          }, 1500);
+        }
+
+        if (finalTranscript.length > 0) {
+          processAndSend(finalTranscript);
+        }
+      };
+
+      recognition.onerror = (e) => {
+        if (e.error !== 'no-speech') console.warn('Speech error:', e.error);
+      };
+
+      recognition.onend = () => {
+        if (isRecording) {
+          setTimeout(() => { try { recognition.start(); } catch(e){} }, 300);
+        }
+      };
+
+      recognition.start();
+      isRecording = true;
+      const btn = document.getElementById('btnMic');
+      btn.innerText = 'Parar Microfone';
+      btn.classList.add('recording');
+    }
+
+    function stopMic() {
+      isRecording = false;
+      if (recognition) recognition.stop();
+      clearTimeout(silenceTimer);
+      const btn = document.getElementById('btnMic');
+      btn.innerText = 'Ligar Microfone';
+      btn.classList.remove('recording');
+      document.getElementById('profDraft').innerText = '';
+    }
+
+    async function processAndSend(rawText) {
+      clearTimeout(silenceTimer);
+      const cleanText = rawText.trim();
+      document.getElementById('profDraft').innerText = '';
+
+      // Filtro 1: Texto muito curto ou igual ao último enviado
+      if (cleanText.length < 3 || cleanText === lastSentText) return;
+
+      // Filtro 2: Anti-alucinação de repetições (ex: "C'mon C'mon C'mon")
+      const words = cleanText.toLowerCase().split(/\s+/);
+      const hasExcessiveRepetition = words.some((w, idx) => w.length > 1 && words[idx+1] === w && words[idx+2] === w);
+      if (hasExcessiveRepetition) return;
+
+      lastSentText = cleanText;
+
+      // Traduzir com limite de 400 carateres
+      const textToTranslate = cleanText.substring(0, 400);
+      const translated = await translatePTtoEN(textToTranslate);
+
+      if (translated) {
+        channel.postMessage({ text: translated });
+        addMessageToFeed(translated);
+      }
+    }
+
+    async function translatePTtoEN(text) {
+      try {
+        const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=pt-PT|en`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        // Validação rigorosa da resposta da API
+        if (data && data.responseData && data.responseStatus === 200) {
+          const trans = data.responseData.translatedText;
+          if (!trans.includes('QUERY LENGTH LIMIT EXCEEDED') && !trans.includes('MYMEMORY WARNING')) {
+            return trans;
+          }
+        }
+      } catch (err) {
+        console.error('Erro na tradução:', err);
+      }
+      return null;
+    }
+
+    function addMessageToFeed(text) {
+      const card = document.createElement('div');
+      card.className = 'msg-card';
+      card.innerText = text;
+
+      const pFeed = document.getElementById('profFeed');
+      const aFeed = document.getElementById('alunaFeed');
+
+      pFeed.prepend(card.cloneNode(true));
+      aFeed.prepend(card);
+    }
+  </script>
+</body>
+</html>
